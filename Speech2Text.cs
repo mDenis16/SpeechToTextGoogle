@@ -18,8 +18,11 @@ namespace SpeechToTextGoogle
         private SpeechClient speechClient;
         private StreamingRecognizeStream streamingCall;
         private RecognitionConfig recognitionConfig;
-
-        public Speech2Text(int sampleRate)
+        private DateTime startTime;
+        private DateTime realStartTime;
+        private CancellationTokenSource tokenSource = new CancellationTokenSource();
+    
+        public Speech2Text(int sampleRate, string authPath)
         {
             this.recordingFormat = new WaveFormat(sampleRate, 16, 1);
 
@@ -36,16 +39,17 @@ namespace SpeechToTextGoogle
                 EnableAutomaticPunctuation = true,
                 Metadata = new RecognitionMetadata()
                 {
-                    InteractionType = RecognitionMetadata.Types.InteractionType.Dictation,
-                      MicrophoneDistance = RecognitionMetadata.Types.MicrophoneDistance.Nearfield,
-                      RecordingDeviceType = RecognitionMetadata.Types.RecordingDeviceType.Pc,
-                      OriginalMediaType = RecognitionMetadata.Types.OriginalMediaType.Audio
+                    InteractionType = RecognitionMetadata.Types.InteractionType.Discussion,
+                    MicrophoneDistance = RecognitionMetadata.Types.MicrophoneDistance.Nearfield,
+                    RecordingDeviceType = RecognitionMetadata.Types.RecordingDeviceType.Pc,
+                    OriginalMediaType = RecognitionMetadata.Types.OriginalMediaType.Audio
                 },
                 AudioChannelCount = 1,
-                LanguageCode = "en",
+                LanguageCode = "en"
             };
-
-            speechClient = SpeechClient.Create();
+            var builder = new SpeechClientBuilder();
+            builder.CredentialsPath = authPath;
+            speechClient = builder.Build();
             streamingCall = speechClient.StreamingRecognize();
         }
         private async Task ReadResponses()
@@ -55,16 +59,13 @@ namespace SpeechToTextGoogle
             while (await responseStream.MoveNextAsync())
             {
                 foreach (var result in responseStream.Current.Results)
-                {
                     Console.WriteLine(result);
-                }
-                if (responseStream.Current.SpeechEventType == StreamingRecognizeResponse.Types.SpeechEventType.EndOfSingleUtterance)
-                {
-                    streamingCall = speechClient.StreamingRecognize();
-                }
+
+                if (tokenSource.Token.IsCancellationRequested)
+                    tokenSource.Token.ThrowIfCancellationRequested();
             }
         }
-      
+
         public async Task Start()
         {
             streamingCall = speechClient.StreamingRecognize();
@@ -80,23 +81,58 @@ namespace SpeechToTextGoogle
                     }
                 });
 
+            startTime = DateTime.Now;
+            realStartTime = startTime;
             waveInStream.StartRecording();
-            _ = ReadResponses();
 
+            await Task.Run(async () => await ReadResponses(), tokenSource.Token);
         }
         public void Stop()
         {
             waveInStream.StopRecording();
+            tokenSource.Cancel();
         }
-
         private async void OnDataAvailable(object sender, WaveInEventArgs e)
         {
-            await streamingCall.WriteAsync(
+            double estimatedTime = (DateTime.Now - startTime).TotalMinutes;
+
+            if (estimatedTime >= 5)
+            {
+                Console.WriteLine("Rested connection!");
+
+                tokenSource.Cancel();
+
+                await streamingCall.WriteCompleteAsync();
+                streamingCall = speechClient.StreamingRecognize();
+
+                await Task.Run(async() => await ReadResponses(), tokenSource.Token);
+
+                await streamingCall.WriteAsync(
+                    new StreamingRecognizeRequest()
+                    {
+                        StreamingConfig = new StreamingRecognitionConfig()
+                        {
+                            Config = recognitionConfig,
+                            InterimResults = false,
+                            SingleUtterance = false
+                        }
+                    });
+                await streamingCall.WriteAsync(
               new StreamingRecognizeRequest()
               {
                   AudioContent = Google.Protobuf.ByteString.CopyFrom(e.Buffer, 0, e.Buffer.Length),
               });
-        }
 
+                startTime = DateTime.Now;
+            }
+            else
+            {
+                await streamingCall.WriteAsync(
+                  new StreamingRecognizeRequest()
+                  {
+                      AudioContent = Google.Protobuf.ByteString.CopyFrom(e.Buffer, 0, e.Buffer.Length),
+                  });
+            }
+        }
     }
 }

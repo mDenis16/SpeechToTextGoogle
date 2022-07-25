@@ -13,10 +13,11 @@ namespace SpeechToTextGoogle
 
         static public void Main()
         {
-            Speech2Text speech = new Speech2Text(16000);
+            Speech2Text speech = new Speech2Text(16000, "auth.json");
 
             speech.Start().GetAwaiter().GetResult();
-            Thread.Sleep(9999999);
+
+            Thread.Sleep(Timeout.Infinite);
         }
     }
 }
